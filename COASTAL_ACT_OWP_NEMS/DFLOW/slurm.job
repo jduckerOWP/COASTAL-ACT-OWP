@@ -1,0 +1,29 @@
+#!/bin/sh -l
+#SBATCH -A ohd            # -A, --account=name          charge job to specified account
+##SBATCH -q debug              # coastal group can only submit to this Q
+#SBATCH -e slurm.error        # -e, --error=err             file for batch script's standard error
+#SBATCH --ignore-pbs          # --ignore-pbs            Ignore #PBS options in the batch script
+#SBATCH -J DFlow_build              # -J, --job-name=jobname      name of job
+#SBATCH -n 4
+#SBATCH -t 30             # -t, --time=minutes          time limit
+
+############################### main - to run: $sbatch nsem.job ##########################
+set -x
+echo $SLURM_SUBMIT_DIR            # (in Slurm, jobs start in "current dir")       
+echo $SLURM_JOBID                                                      
+echo $SLURM_JOB_NAME
+echo $SLURM_NNODES                                                     
+echo $SLURM_TASKS_PER_NODE
+
+# PBS_NODEFILE:  There is not a direct equivalent for this, but 
+echo $SLURM_NODELIST              # give you the list of assigned nodes.
+
+# cd $SLURM_SUBMIT_DIR
+echo "STARTING THE JOB AT"
+date
+
+
+cd /scratch2/COASTAL/coastal/noscrub/Jason.Ducker/DFlowFM_2022.03
+./build.sh
+
+date

@@ -1,0 +1,56 @@
+----------------------------------
+Thu Sep 29 14:29:00 UTC 2022
+building libadc.a
+PPFC := ifort -DADCNETCDF -I/scratch1/NCEPDEV/nems/emc.nemspara/soft/netcdf_parallel_release/include -DHAVE_NETCDF4 -DNETCDF_CAN_DEFLATE
+FC := ifort
+PFC := mpiifort -DADCNETCDF -I/scratch1/NCEPDEV/nems/emc.nemspara/soft/netcdf_parallel_release/include -DHAVE_NETCDF4 -DNETCDF_CAN_DEFLATE -DADCNETCDF -I/scratch1/NCEPDEV/nems/emc.nemspara/soft/netcdf_parallel_release/include -DHAVE_NETCDF4 -DNETCDF_CAN_DEFLATE
+FFLAGS1 := -I. -I/scratch2/COASTAL/coastal/noscrub/Jason.Ducker/NEMS_DFlow_new/ADCIRC/prep -O2 -g -traceback -FI -assume byterecl -132 -xSSE4.2 -assume buffered_io -DADCNETCDF -I/scratch1/NCEPDEV/nems/emc.nemspara/soft/netcdf_parallel_release/include -DHAVE_NETCDF4 -DNETCDF_CAN_DEFLATE
+FFLAGS2 := -I. -I/scratch2/COASTAL/coastal/noscrub/Jason.Ducker/NEMS_DFlow_new/ADCIRC/prep -O2 -g -traceback -FI -assume byterecl -132 -xSSE4.2 -assume buffered_io -DADCNETCDF -I/scratch1/NCEPDEV/nems/emc.nemspara/soft/netcdf_parallel_release/include -DHAVE_NETCDF4 -DNETCDF_CAN_DEFLATE
+FFLAGS3 := -I. -I/scratch2/COASTAL/coastal/noscrub/Jason.Ducker/NEMS_DFlow_new/ADCIRC/prep -O2 -g -traceback -FI -assume byterecl -132 -xSSE4.2 -assume buffered_io -DADCNETCDF -I/scratch1/NCEPDEV/nems/emc.nemspara/soft/netcdf_parallel_release/include -DHAVE_NETCDF4 -DNETCDF_CAN_DEFLATE
+DA := -DREAL8 -DLINUX -DCSCA
+DP := -DREAL8 -DLINUX -DCSCA -DCMPI
+DPRE := -DREAL8 -DLINUX
+IMODS := -I
+CC := icc
+CCBE := icc
+CFLAGS := -I. -I/scratch2/COASTAL/coastal/noscrub/Jason.Ducker/NEMS_DFlow_new/ADCIRC/prep -O2 -xSSE4.2 -m64 -mcmodel=medium -DLINUX
+CLIBS := 
+LIBS := -L/scratch1/NCEPDEV/nems/emc.nemspara/soft/netcdf_parallel_release/lib -lnetcdf -lnetcdff 
+MSGLIBS := 
+compiler := intel
+MACHINENAME := 
+NETCDF := enable
+NETCDFHOME := enable
+NETCDF4 := enable
+NETCDF4_COMPRESSION := enable
+XDMF := 
+ifort (IFORT) 18.0.5 20180823
+----------------------------------
+----------------------------------
+Thu Sep 29 14:30:26 UTC 2022
+building adcprep
+PPFC := ifort -DADCNETCDF -I/scratch1/NCEPDEV/nems/emc.nemspara/soft/netcdf_parallel_release/include -DHAVE_NETCDF4 -DNETCDF_CAN_DEFLATE
+FC := ifort
+PFC := mpiifort -DADCNETCDF -I/scratch1/NCEPDEV/nems/emc.nemspara/soft/netcdf_parallel_release/include -DHAVE_NETCDF4 -DNETCDF_CAN_DEFLATE -DADCNETCDF -I/scratch1/NCEPDEV/nems/emc.nemspara/soft/netcdf_parallel_release/include -DHAVE_NETCDF4 -DNETCDF_CAN_DEFLATE
+FFLAGS1 := -I. -I/scratch2/COASTAL/coastal/noscrub/Jason.Ducker/NEMS_DFlow_new/ADCIRC/prep -O2 -g -traceback -FI -assume byterecl -132 -xSSE4.2 -assume buffered_io -DADCNETCDF -I/scratch1/NCEPDEV/nems/emc.nemspara/soft/netcdf_parallel_release/include -DHAVE_NETCDF4 -DNETCDF_CAN_DEFLATE
+FFLAGS2 := -I. -I/scratch2/COASTAL/coastal/noscrub/Jason.Ducker/NEMS_DFlow_new/ADCIRC/prep -O2 -g -traceback -FI -assume byterecl -132 -xSSE4.2 -assume buffered_io -DADCNETCDF -I/scratch1/NCEPDEV/nems/emc.nemspara/soft/netcdf_parallel_release/include -DHAVE_NETCDF4 -DNETCDF_CAN_DEFLATE
+FFLAGS3 := -I. -I/scratch2/COASTAL/coastal/noscrub/Jason.Ducker/NEMS_DFlow_new/ADCIRC/prep -O2 -g -traceback -FI -assume byterecl -132 -xSSE4.2 -assume buffered_io -DADCNETCDF -I/scratch1/NCEPDEV/nems/emc.nemspara/soft/netcdf_parallel_release/include -DHAVE_NETCDF4 -DNETCDF_CAN_DEFLATE
+DA := -DREAL8 -DLINUX -DCSCA
+DP := -DREAL8 -DLINUX -DCSCA -DCMPI
+DPRE := -DREAL8 -DLINUX
+IMODS := -I
+CC := icc
+CCBE := icc
+CFLAGS := -I. -I/scratch2/COASTAL/coastal/noscrub/Jason.Ducker/NEMS_DFlow_new/ADCIRC/prep -O2 -xSSE4.2 -m64 -mcmodel=medium -DLINUX
+CLIBS := 
+LIBS := -Lodir_metis -lmetis -L/scratch1/NCEPDEV/nems/emc.nemspara/soft/netcdf_parallel_release/lib -lnetcdf -lnetcdff 
+MSGLIBS := 
+compiler := intel
+MACHINENAME := 
+NETCDF := enable
+NETCDFHOME := enable
+NETCDF4 := enable
+NETCDF4_COMPRESSION := enable
+XDMF := 
+ifort (IFORT) 18.0.5 20180823
+----------------------------------

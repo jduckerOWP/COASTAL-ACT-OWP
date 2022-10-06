@@ -1,0 +1,745 @@
+#define FILENAME "NWM_Hydraulic_Gluecode"
+#define MODNAME "NWM_Hydraulic_Gluecode.F90"
+#include "NWM_NUOPC_Macros.h"
+
+#define DEBUG=on
+
+module NWM_HYC_Gluecode
+! !MODULE: NWM Coastal Hydraulic Engine_Gluecode
+!
+! !DESCRIPTION:
+!   This module connects initialize, advance,
+!   and finalize to DFlow.
+!
+! !REVISION HISTORY:
+!  13Oct15    Dan Rosen - Initial design and development
+!  12/12/2020  Beheen Trimble - calls DFlow standalone directly
+!
+
+  use ESMF
+  use NUOPC
+  use NWM_ESMF_Extensions
+  use NWM_ESMF_Utility
+
+  ! dflow model
+  ! avoid namespace collision with network
+  use unstruc_api
+  use network_data
+  use m_flow
+  use m_flowgeom
+  use unstruc_model
+  use unstruc_files
+  use m_partitioninfo
+
+  use mpi
+
+
+
+  implicit none
+
+  private
+
+  public :: NWM_HYC_Init
+  public :: NWM_HYCMeshCreate
+  public :: NWM_HYC_Run
+  !public :: NWM_HYC_Fin
+  public :: NWM_HYCField
+  public :: NWM_HYCFieldList
+  public :: NWM_HYCFieldDictionaryAdd
+  !public :: NWM_HYCFieldCreate
+  !public :: NWM_HYCSetFieldData
+
+  type NWM_HYCField
+    character(len=64)   :: stdname        = ' '  ! human readable name
+    character(len=64)   :: shortname      = ' '  ! variable of the field
+    character(len=64)   :: desc           = ' '
+    character(len=10)   :: units          = ' '
+    character(len=64)   :: transferOffer  = 'will provide'
+    logical             :: adImport       = .FALSE.
+    logical             :: realizedImport = .FALSE.
+    logical             :: adExport       = .FALSE.
+    logical             :: realizedExport = .FALSE.
+    logical             :: assoc          = .FALSE. 
+    real(ESMF_KIND_R8), dimension(:), pointer :: farrayPtr => null()
+  end type NWM_HYCField
+
+  type(NWM_HYCField),dimension(11) :: NWM_HYCFieldList = (/ & 
+
+    NWM_HYCField( & !(1)
+      stdname='flow_rate', units='m3 s-1', &
+      desc='volume of fluid passing by some location through an area during a period of time.', shortname='streamflow', &
+      adImport=.FALSE.,adExport=.TRUE.), &
+
+
+    NWM_HYCField( & !(2) U_PHY     (XSTART:XEND,KDS:KDE,YSTART:YEND) )  ! 3D U wind component [m/s]
+      stdname='wind_velocity_u', units='m s-1', &
+      desc='UGRD, 10-m eastward wind', shortname='U2D', &
+      adImport=.TRUE.,adExport=.FALSE.), &
+
+    NWM_HYCField( & !(3) V_PHY     (XSTART:XEND,KDS:KDE,YSTART:YEND) )  ! 3D V wind component [m/s]
+      stdname='wind_velocity_v', units='m s-1', &
+      desc='VGRD, 10-m northward wind', shortname='V2D', &
+      adImport=.TRUE.,adExport=.FALSE.), &
+
+    NWM_HYCField( & !(4) 
+      stdname='air_pressure_at_sea_level', units='Pa', &   !atm pmsl
+                              !stdname='surface_pressure', units='Pa', &
+      desc='surface pressure.', shortname='PSFC', &    
+      adImport=.TRUE.,adExport=.FALSE.), &
+
+    NWM_HYCField( & !(5 file: ???) 
+      stdname='mean_sea_level', units='Pa', &
+      desc='PRMSL, Pressure Reduced to MSL, atm. pressure', shortname='PMSL', &
+      adImport=.TRUE.,adExport=.FALSE.), &
+
+    NWM_HYCField( & !(6) 
+      stdname='rediation_stress_xy', units='m s-1', &
+      desc='Rediation stress Instantanous fields', shortname='SXY', &
+      adImport=.TRUE.,adExport=.FALSE.), &
+
+    NWM_HYCField( & !(7)
+      stdname='rediation_stress_xx', units='m s-1', &
+      desc='Rediation stress Instantanous fields', shortname='SXX', &
+      adImport=.TRUE.,adExport=.FALSE.), &
+
+    NWM_HYCField( & !(8)
+      stdname='rediation_stress_yy', units='m s-1', &
+      desc='Rediation stress Instantanous fields', shortname='SYY', &
+      adImport=.TRUE.,adExport=.FALSE.), &
+
+    NWM_HYCField( & !(9)
+      stdname='wave_peak_mean_dir', units='degree', &
+      desc='Peak/Mean wave direction', shortname='??', &
+      adImport=.TRUE.,adExport=.FALSE.), &
+
+    NWM_HYCField( & !(10 ADCIRC waterlevel advertized name)
+      stdname="sea_surface_height_above_sea_level",  units='m', &
+      desc='waterlevel', shortname='zeta', &
+      adImport=.TRUE.,adExport=.FALSE.), &
+ 
+    ! For testing waterlevel for now we use this
+    NWM_HYCField( & !(11)
+      stdname='water_level', units='m', &
+      desc='For testing waterlevel for now we use this', shortname='wl', &
+      adImport=.TRUE.,adExport=.FALSE.) /)
+
+
+  ! Added to consider the adaptive time step from driver.
+  real                  :: dt0        = UNINITIALIZED
+  real                  :: dtrt_ter0  = UNINITIALIZED
+  real                  :: dtrt_ch0   = UNINITIALIZED
+  integer               :: dt_factor0 = UNINITIALIZED
+  integer               :: dt_factor  = UNINITIALIZED
+  ! Added to track the driver clock
+  character(len=19)     :: startTimeStr = "0000-00-00_00:00:00"
+
+  character(len=512)    :: logMsg
+
+  !-----------------------------------------------------------------------------
+  ! Model Glue Code
+  !-----------------------------------------------------------------------------
+contains
+
+#undef METHOD
+#define METHOD "NWM_HYC_Init"
+
+  subroutine NWM_HYC_Init(vm,clock,rc)
+
+    use unstruc_display, only : jaGUI
+    use unstruc_api 
+    use m_flowtimes,     only : time_user
+    use m_partitioninfo, only : DFM_COMM_DFMWORLD, ja_mpi_init_by_fm, &
+                                my_rank, numranks, sdmn, jampi
+
+#ifdef HAVE_MPI
+    use mpi
+#endif
+
+    ! arguments
+    type(ESMF_VM),intent(in)       :: vm
+    type(ESMF_Clock),intent(in)    :: clock
+    integer                        :: rc, itime, ntime  !ntime is runDuration in hour
+    character(50)                  :: filename = "DBay.mdu"
+
+    ! Local variables
+    integer                     :: localPet       ! current process number
+    integer                     :: stat       
+    integer                     :: esmf_comm, nuopc_comm
+    character(20)               :: starttime_str="1111"
+
+    ! clock coming from NEMS
+    type(ESMF_Time)             :: startTime        ! comes in sec. from NEMS
+    type(ESMF_TimeInterval)     :: runDuration      ! comes in sec. from NEMS
+    real(ESMF_KIND_R8)          :: runDuration_int
+    character(20)               :: startTimeStr="2222"
+   
+    ! for dflow model
+    integer :: inerr  ! number of the initialisation error
+    logical :: mpi_initd
+
+#ifdef DEBUG
+    character(ESMF_MAXSTR)      :: logMsg
+#endif
+
+#ifdef DEBUG
+    call ESMF_LogWrite(MODNAME//": entered "//METHOD, ESMF_LOGMSG_INFO)
+#endif
+
+    rc = ESMF_SUCCESS
+
+    ! Set mpiCommunicator for dflow
+    call ESMF_VMGet(vm, localPet=localPet, mpiCommunicator=esmf_comm, rc=rc)
+    if (ESMF_STDERRORCHECK(rc)) return  ! bail out
+    !call NWM_HYCVMPrint(vm)
+
+    call MPI_Comm_dup(esmf_comm, nuopc_comm, rc)
+    ! Duplicate the MPI communicator not to interfere with ESMF communications.
+    ! The duplicate MPI communicator can be used in any MPI call in the user
+    ! code. Here the MPI_Barrier() routine is called.
+    call MPI_Barrier(nuopc_comm, rc) 
+
+    call mpi_initialized(mpi_initd, inerr)
+    if (.not. mpi_initd) then
+      ja_mpi_init_by_fm = 1
+      call mpi_init(rc)
+    else
+      ja_mpi_init_by_fm = 0
+    end if
+
+    ! use nuopc_comm
+    DFM_COMM_DFMWORLD = nuopc_comm
+    call mpi_comm_rank(DFM_COMM_DFMWORLD,my_rank,rc)
+    call mpi_comm_size(DFM_COMM_DFMWORLD,numranks,rc)
+
+    if (numranks.le.1 ) then
+      jampi = 0
+    end if
+
+    ! make domain number string as soon as possible
+    write(sdmn, '(I4.4)') my_rank
+
+
+    ! do this until default has changed
+    jaGUI = 0
+
+    !< dflowfm_kernel/src/rest.F90:1326
+    ! init diagnostic files, version info, 
+    call start() ! required because of initprogram, which calls initsysenv
+                 ! unstruc_files.f90:376 - inidia(basename)
+                 ! rest.F90 - FIRSTLIN(MRGF)
+                 ! unstruc_startup.f90:48 - initProgram()
+                 
+    call inidat() ! net.F90:37
+
+    write(*,*) 'Initializing model', trim(filename)
+    call api_loadmodel(filename)      !< unstruc_api.F90:197 and unstruc_model.f90:416
+    write(*,*) 'model initialized: ', numk, ' nodes'
+
+   !PETSC must be called AFTER reading the mdu file, so the icgsolver option is
+   !known to startpetsc
+#ifdef HAVE_PETSC
+   call startpetsc()
+#endif
+
+    rc = flowinit()  !< unstruc_api.F90: 212
+
+    time_user = tstart_user  !< modules.f90:4408 -  m_flowtimes
+
+
+  end subroutine
+
+
+  !-----------------------------------------------------------------------------
+  ! Calls NWM land_driver_exe(itime) command per timestep.
+  !-----------------------------------------------------------------------------
+
+#undef METHOD
+#define METHOD "NWM_HYC_Run"
+
+  subroutine NWM_HYC_Run(vm,clock,itime,importState,exportState,rc)
+
+    type(ESMF_VM), intent(in)               :: vm      ! see if we need this
+    type(ESMF_Clock),intent(in)             :: clock
+    type(ESMF_State),intent(inout)          :: importState
+    type(ESMF_State),intent(inout)          :: exportState
+    integer, intent(out)                    :: rc
+    integer, intent(in)                     :: itime
+   
+    ! local variables
+    type(ESMF_TimeInterval)     :: timeStep
+#ifdef DEBUG
+    call ESMF_LogWrite(MODNAME//": entered "//METHOD, ESMF_LOGMSG_INFO)
+#endif
+
+  end subroutine
+
+  !-----------------------------------------------------------------------------
+  ! At the end of number of iterations, stops the program.
+  !-----------------------------------------------------------------------------
+#undef METHOD
+#define METHOD "NWM_HYC_Fin"
+
+  subroutine NWM_HYC_Fin(rc)
+
+    ! ARGUMENTES
+    integer, intent(out)        :: rc
+
+    ! LOCAL VARIABLES
+    integer                     :: stat
+
+#ifdef DEBUG
+    call ESMF_LogWrite(MODNAME//": entered "//METHOD, ESMF_LOGMSG_INFO)
+#endif
+
+    rc = ESMF_SUCCESS
+
+#ifdef DEBUG
+    call ESMF_LogWrite(MODNAME//": leaving "//METHOD, ESMF_LOGMSG_INFO)
+#endif
+
+  end subroutine
+
+  !-----------------------------------------------------------------------------
+  ! Dictionary Utility
+  !-----------------------------------------------------------------------------
+
+#undef METHOD
+#define METHOD "NWM_HYCFieldDictionaryAdd"
+
+  subroutine NWM_HYCFieldDictionaryAdd(fd, rc)
+    ! ARGUMENTS
+    character(len=64), optional :: fd
+    integer,intent(out)         :: rc
+
+    ! LOCAL VARIABLES
+    integer                    :: fIndex
+    logical                    :: isPresent
+
+#ifdef DEBUG
+    call ESMF_LogWrite(MODNAME//": entered "//METHOD, ESMF_LOGMSG_INFO)
+#endif
+
+    rc = ESMF_SUCCESS
+
+    if (present(fd)) then
+        ! read the field file and keep a local import/export field
+        ! TO DO
+    else
+      do fIndex=1,size(NWM_HYCFieldList)
+        isPresent = NUOPC_FieldDictionaryHasEntry( &
+          trim(NWM_HYCFieldList(fIndex)%stdname), &
+          rc=rc)
+        if (ESMF_STDERRORCHECK(rc)) return
+ 
+        if (.not.isPresent) then
+          call NUOPC_FieldDictionaryAddEntry( &
+            trim(NWM_HYCFieldList(fIndex)%stdname), &
+            trim(NWM_HYCFieldList(fIndex)%units), &
+            rc=rc)
+          if (ESMF_STDERRORCHECK(rc)) return
+        endif
+      enddo
+    endif
+
+#ifdef DEBUG
+    call ESMF_LogWrite(MODNAME//": leaving "//METHOD, ESMF_LOGMSG_INFO)
+#endif
+
+  end subroutine 
+
+
+  !-----------------------------------------------------------------------------
+#undef METHOD
+#define METHOD "NWM_HYCMeshCreate()"
+
+  function  NWM_HYCMeshCreate(rc)
+    ! Return value
+    type(ESMF_Mesh)        :: NWM_HYCMeshCreate
+
+    type(ESMF_DistGrid)    :: distgrid ! For mpi
+
+    integer, intent(out)   :: rc
+
+    ! Grid administration
+
+    ! Use the same variable names as in the ESMF docs
+    ! Dimensions and counting
+
+    ! Dimension of the topology of the Mesh. (E.g. a mesh constructed
+    ! of squares would have a parametric dimension of 2, whereas a
+    ! Mesh constructed of cubes would have one of 3.)
+    integer                      :: parametricDim = 2
+    ! The number of coordinate dimensions needed to describe the
+    ! locations of the nodes making up the Mesh. For a manifold, the
+    ! spatial dimesion can be larger than the parametric dim (e.g. the
+    ! 2D surface of a sphere in 3D space), but it can't be smaller.
+    integer                      :: spatialDim = 2
+
+    integer                      :: numNodes
+    integer                      :: numQuadElems
+    integer                      :: numTriElems
+    integer                      :: numTotElems
+
+    ! Variables An array containing the physical coordinates of the
+    ! nodes to be created on this PET. This input consists of a 1D
+    ! array the size of the number of nodes on this PET times the
+    ! Mesh's spatial dimension (spatialDim). The coordinates in this
+    ! array are ordered so that the coordinates for a node lie in
+    ! sequence in memory. (e.g. for a Mesh with spatial dimension 2,
+    ! the coordinates for node 1 are in nodeCoords(0) and
+    ! nodeCoords(1), the coordinates for node 2 are in nodeCoords(2)
+    ! nodeCoords(1), the coordinates for node 2 are in nodeCoords(2)
+    ! and nodeCoords(3), etc.).
+    real(ESMF_KIND_R8), allocatable :: nodeCoords(:)
+
+    ! An array containing the global ids of the nodes to be created on
+    ! this PET. This input consists of a 1D array the size of the
+    ! number of nodes on this PET.
+    integer, allocatable         :: nodeIds(:)
+    integer, allocatable         :: nodeOwners(:)
+
+    ! An array containing the global ids of the elements to be created
+    ! on this PET. This input consists of a 1D array the size of the
+    ! number of elements on this PET.
+    integer, allocatable         :: elementIds(:)
+
+    ! An array containing the types of the elements to be created on
+    ! this PET. The types used must be appropriate for the parametric
+    ! dimension of the Mesh. Please see Section 29.2.1 for the list of
+    ! options. This input consists of a 1D array the size of the
+    ! number of elements on this PET.
+    integer, allocatable         :: elementTypes(:)
+
+    ! An array containing the indexes of the sets of nodes to be
+    ! connected together to form the elements to be created on this
+    ! PET. The entries in this list are NOT node global ids, but
+    ! rather each entry is a local index (1 based) into the list of
+    ! nodes which were created on this PET by the previous
+    ! ESMF_MeshAddNodes() call. In other words, an entry of 1
+    ! indicates that this element contains the node described by
+    ! nodeIds(1), nodeCoords(1), etc. passed into the
+    ! ESMF_MeshAddNodes() call on this PET. It is also important to
+    ! note that the order of the nodes in an element connectivity list
+    ! matters. Please see Section 29.2.1 for diagrams illustrating the
+    ! correct order of nodes in a element. This input consists of a 1D
+    ! array with a total size equal to the sum of the number of nodes
+    ! in each element on this PET. The number of nodes in each element
+    ! is implied by its element type in elementTypes. The nodes for
+    ! each element are in sequence in this array (e.g. the nodes for
+    ! element 1 are elementConn(1), elementConn(2), etc.).
+    integer, allocatable         :: elementConn(:) !  4*numQuadElems+3*numTriElems
+
+    ! For coupling only these elements are supported.
+    ! Cell types
+    integer :: TRI = ESMF_MESHELEMTYPE_TRI
+    integer :: QUAD = ESMF_MESHELEMTYPE_QUAD
+
+    ! iters
+    integer :: i,j,k
+
+#ifdef DEBUG
+    character(ESMF_MAXSTR)      :: logMsg
+#endif
+
+#ifdef DEBUG
+    call ESMF_LogWrite(MODNAME//": entered "//METHOD, ESMF_LOGMSG_INFO)
+#endif
+
+    rc = ESMF_SUCCESS
+
+    write(*,*) 'Step 1'
+    ! Create a Mesh as a 3 step process (dims, nodes, elements)
+    NWM_HYCMeshCreate = ESMF_MeshCreate(parametricDim=parametricDim,spatialDim=spatialDim, &
+                         coordSys=ESMF_COORDSYS_SPH_DEG,rc=rc)
+    if (ESMF_STDERRORCHECK(rc)) return
+    
+    ! Create the nodes...
+    write(*,*) 'Making grid with ', numk, ' nodes.'
+    numNodes = numk
+    ! Fill the indices
+    allocate(nodeIds(numNodes))
+    forall (i=1:numNodes:1) nodeIds(i) = i
+
+    ! nodeCoords=(/ xk(1), yk(1), xk(2), yk(2), ....
+    allocate(nodeCoords(2*numNodes))
+    nodeCoords(1:(2*numNodes):2) = xk(1:numNodes)
+    nodeCoords(2:(2*numNodes):2) = yk(1:numNodes)
+
+    ! Set all nodes owned to pet0
+    allocate(nodeOwners(numNodes))
+    nodeOwners=0
+
+    ! write(*,*) 'Sizes: netcell', shape(netcell)
+    ! write(*,*) 'Sizes: numnodes', numnodes
+    ! write(*,*) 'Sizes: nump', nump, '*'
+    ! write(*,*) 'Sizes: numk', numk, '*'
+    ! write(*,*) 'Sizes: ndx', ndx
+    ! write(*,*) 'Sizes: s1', size(s1), '*'
+    ! write(*,*) 'Sizes: tnod', size(nd), '*'
+
+    write(*,*) 'Step 2'
+    call ESMF_MeshAddNodes(NWM_HYCMeshCreate, nodeIds, nodeCoords, nodeOwners, rc=rc)
+    if (ESMF_STDERRORCHECK(rc)) return
+
+    ! Let's define the elements
+    ! Following example of the reference manual
+    numTotElems = nump
+    numQuadElems = 0
+    numTriElems = 0
+    ! This is almost similar to the VTK data structure
+    allocate(elementTypes(numTotElems))
+    allocate(elementIds(numTotElems))
+
+    do k=1,numTotElems
+       ! Use the netcells.
+       select case(size(nd(k)%nod))
+       case(3)
+          elementTypes(k) = TRI
+          numTriElems = numTriElems + 1
+       case(4)
+          elementTypes(k) = QUAD
+          numQuadElems = numQuadElems + 1
+       case default
+          write(*,*) 'Assertion failed expecting elements of 3,4 nodes, got', nd(k)%nod, ' for ', k
+       end select
+    end do
+    ! check...
+    if (.not. (numTriElems + numQuadElems) .eq. numTotElems) rc=10
+    ! A list of all nodes (without the count that vtk uses)
+    allocate(elementConn(4*numQuadElems+3*numTriElems))
+
+    ! Just the counters. (1 based)
+    forall (i=1:numTotElems:1) elementIds(i) = i
+
+    ! Setup th econnections
+    j = 1
+    do k=1,numTotElems
+       ! Use the netcells. (TODO check)
+       select case(size(nd(k)%nod))
+       case(3)
+          elementConn(j:(j+3)) = nd(k)%nod(1:3)
+          j = j+3
+       case(4)
+          elementConn(j:(j+4)) = nd(k)%nod(1:4)
+          j = j+4
+       case default
+          write(*,*) 'Assertion failed expecting elements of 3,4 nodes, got', nd(k)%nod, ' for ', k
+       end select
+    end do
+    write(*,*) 'Step 3'
+
+    ! Now we have everything, let's add them
+    call ESMF_MeshAddElements(NWM_HYCMeshCreate, elementIds, elementTypes, elementConn, rc=rc)
+    if (ESMF_STDERRORCHECK(rc)) return
+
+    ! Cleanup...
+    deallocate(nodeIds)
+    deallocate(nodeCoords)
+    deallocate(nodeOwners)
+    deallocate(elementIds)
+    deallocate(elementTypes) !
+    deallocate(elementConn)
+
+    ! And we're done.
+#ifdef DEBUG
+    call ESMF_LogWrite(MODNAME//": leaving "//METHOD, ESMF_LOGMSG_INFO)
+#endif
+
+  end function
+
+
+  ! helper function for fields...
+  subroutine make_unstruc_fieldbundle(mesh, stateintent, fieldbundle, rc)
+
+    type(ESMF_Mesh), intent(inout)          :: mesh
+    type(ESMF_StateIntent_Flag), intent(in) :: stateintent
+    type(ESMF_FieldBundle), intent(out)     :: fieldbundle
+    integer, intent(out)                    :: rc
+
+    type(ESMF_Field)         :: field
+    type(ESMF_TypeKind_Flag) :: typekind
+    type(ESMF_MeshLoc)       :: meshloc
+    integer                  :: nelements
+
+    real(ESMF_KIND_R8), dimension(:), pointer :: farrayPtr
+    character(ESMF_MAXSTR)                    :: name
+
+
+    if (stateintent .eq. ESMF_STATEINTENT_EXPORT) then
+
+      ! Add all the fields here... Pointers should update automaticly....
+      ! (don't copy data)
+      name="s1"
+
+      if (allocated(s1)) then
+        farrayPtr => s1(1:numk)
+        field = ESMF_FieldCreate(mesh, farrayPtr=farrayPtr, meshloc=ESMF_MESHLOC_NODE, name=name, rc=rc)
+        if (ESMF_STDERRORCHECK(rc)) return
+         
+        call ESMF_FieldBundleAdd(fieldbundle, fieldList=(/field/), rc=rc)
+        if (ESMF_STDERRORCHECK(rc)) return
+          
+      else
+        write(*,*) 's1 not allocated skipping'
+      end if
+
+      name="ucx"
+      if (allocated(ucx)) then
+        farrayPtr => ucx(1:numk)
+        field = ESMF_FieldCreate(mesh, farrayPtr=farrayPtr, meshloc=ESMF_MESHLOC_NODE, name=name, rc=rc)
+        if (ESMF_STDERRORCHECK(rc)) return
+          
+        call ESMF_FieldBundleAdd(fieldbundle, fieldList=(/field/), rc=rc)
+        if (ESMF_STDERRORCHECK(rc)) return
+      
+      else
+        write(*,*) 'ucx not allocated skipping'
+      end if
+
+      name="ucy"
+      if (allocated(ucy)) then
+        farrayPtr => ucy(1:numk)
+        field = ESMF_FieldCreate(mesh, farrayPtr=farrayPtr,meshloc=ESMF_MESHLOC_NODE, name=name, rc=rc)
+        if (ESMF_STDERRORCHECK(rc)) return
+     
+        call ESMF_FieldBundleAdd(fieldbundle, fieldList=(/field/),rc=rc)
+        if (ESMF_STDERRORCHECK(rc)) return
+    
+      else
+        write(*,*) 'ucy not allocated skipping'
+      end if
+      ! TODO extend with edge location
+
+      name="hs"
+      if (allocated(hs)) then
+        farrayPtr => hs(1:numk)
+        field = ESMF_FieldCreate(mesh, farrayPtr=farrayPtr,meshloc=ESMF_MESHLOC_NODE, name=name, rc=rc)
+        if (ESMF_STDERRORCHECK(rc)) return
+       
+        call ESMF_FieldBundleAdd(fieldbundle, fieldList=(/field/),rc=rc)
+        if (ESMF_STDERRORCHECK(rc)) return
+     
+      else
+        write(*,*) 'hs not allocated skipping'
+      end if
+
+      ! TODO Wait for ESMF for best approach....
+      ! test with edges...
+      ! name="u1"
+      ! farrayPtr => u1
+      ! field = ESMF_FieldCreate(mesh,farrayPtr=farrayPtr,meshloc=ESMF_MESHLOC_ELEMENT, name=name, rc=rc)
+      ! if (ESMF_STDERRORCHECK(rc)) return
+      ! call ESMF_FieldBundleAdd(fieldbundle, fieldList=(/field/),rc=rc)
+      ! if (ESMF_STDERRORCHECK(rc)) return
+
+
+
+    elseif (stateintent .eq. ESMF_STATEINTENT_IMPORT) then
+
+      ! Create import state with pointers to all variables
+      if (allocated(twav)) then
+        name="twav"
+        farrayPtr => twav(1:numk)
+        field = ESMF_FieldCreate(mesh, farrayPtr=farrayPtr, meshloc=ESMF_MESHLOC_NODE, name=name, rc=rc)
+        if (ESMF_STDERRORCHECK(rc)) return
+        
+        call ESMF_FieldBundleAdd(fieldbundle, fieldList=(/field/),rc=rc)
+        if (ESMF_STDERRORCHECK(rc)) return
+       
+      end if
+      if (allocated(Uorb)) then
+        name="Uorb"
+        farrayPtr => Uorb(1:numk)
+        field = ESMF_FieldCreate(mesh, farrayPtr=farrayPtr, meshloc=ESMF_MESHLOC_NODE, name=name, rc=rc)
+        if (ESMF_STDERRORCHECK(rc)) return
+      
+        call ESMF_FieldBundleAdd(fieldbundle, fieldList=(/field/),rc=rc)
+        if (ESMF_STDERRORCHECK(rc)) return
+    
+      end if
+      if (allocated(hwav)) then
+        name="hwav"
+        farrayPtr => hwav(1:numk)
+        field = ESMF_FieldCreate(mesh, farrayPtr=farrayPtr, meshloc=ESMF_MESHLOC_NODE, name=name, rc=rc)
+        if (ESMF_STDERRORCHECK(rc)) return
+       
+        call ESMF_FieldBundleAdd(fieldbundle, fieldList=(/field/),rc=rc)
+        if (ESMF_STDERRORCHECK(rc)) return
+    
+      end if
+      if (allocated(tpswav)) then
+        name="tpswav"
+        farrayPtr => tpswav(1:numk)
+        field = ESMF_FieldCreate(mesh, farrayPtr=farrayPtr, meshloc=ESMF_MESHLOC_NODE, name=name, rc=rc)
+        if (ESMF_STDERRORCHECK(rc)) return
+       
+        call ESMF_FieldBundleAdd(fieldbundle, fieldList=(/field/),rc=rc)
+        if (ESMF_STDERRORCHECK(rc)) return
+   
+      end if
+      if (allocated(rtpwav)) then
+        name="rtpwav"
+        farrayPtr => rtpwav(1:numk)
+        field = ESMF_FieldCreate(mesh, farrayPtr=farrayPtr, meshloc=ESMF_MESHLOC_NODE, name=name, rc=rc)
+        if (ESMF_STDERRORCHECK(rc)) return
+      
+        call ESMF_FieldBundleAdd(fieldbundle, fieldList=(/field/),rc=rc)
+        if (ESMF_STDERRORCHECK(rc)) return
+   
+      end if
+      if (allocated(phiwav)) then
+        name="phiwav"
+        farrayPtr => phiwav(1:numk)
+        field = ESMF_FieldCreate(mesh, farrayPtr=farrayPtr, meshloc=ESMF_MESHLOC_NODE, name=name, rc=rc)
+        if (ESMF_STDERRORCHECK(rc)) return
+     
+        call ESMF_FieldBundleAdd(fieldbundle, fieldList=(/field/),rc=rc)
+        if (ESMF_STDERRORCHECK(rc)) return
+    
+      end if
+      if (allocated(fxwav)) then
+        name="fxwav"
+        farrayPtr => fxwav(1:numk)
+        field = ESMF_FieldCreate(mesh, farrayPtr=farrayPtr, meshloc=ESMF_MESHLOC_NODE, name=name, rc=rc)
+        if (ESMF_STDERRORCHECK(rc)) return
+     
+        call ESMF_FieldBundleAdd(fieldbundle, fieldList=(/field/),rc=rc)
+   
+      end if
+      if (allocated(fywav)) then
+        name="fywav"
+        farrayPtr => fywav(1:numk)
+        field = ESMF_FieldCreate(mesh, farrayPtr=farrayPtr, meshloc=ESMF_MESHLOC_NODE, name=name, rc=rc)
+        if (ESMF_STDERRORCHECK(rc)) return
+      
+        call ESMF_FieldBundleAdd(fieldbundle, fieldList=(/field/),rc=rc)
+   
+      end if
+      if (allocated(uorbwav)) then
+        name="uorbwav"
+        farrayPtr => uorbwav(1:numk)
+        field = ESMF_FieldCreate(mesh, farrayPtr=farrayPtr, meshloc=ESMF_MESHLOC_NODE, name=name, rc=rc)
+        if (ESMF_STDERRORCHECK(rc)) return
+     
+        call ESMF_FieldBundleAdd(fieldbundle, fieldList=(/field/),rc=rc)
+        if (ESMF_STDERRORCHECK(rc)) return
+   
+      end if
+      if (allocated(wlenwav)) then
+        name="wlenwav"
+        farrayPtr => wlenwav(1:numk)
+        field = ESMF_FieldCreate(mesh, farrayPtr=farrayPtr, meshloc=ESMF_MESHLOC_NODE, name=name, rc=rc)
+        if (ESMF_STDERRORCHECK(rc)) return
+       
+        call ESMF_FieldBundleAdd(fieldbundle, fieldList=(/field/),rc=rc)
+        if (ESMF_STDERRORCHECK(rc)) return
+   
+      end if
+
+    end if
+
+  end subroutine make_unstruc_fieldbundle
+                        
+end module NWM_HYC_Gluecode
+
+

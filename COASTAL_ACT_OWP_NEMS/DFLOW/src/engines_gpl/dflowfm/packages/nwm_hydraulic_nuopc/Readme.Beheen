@@ -1,0 +1,92 @@
+(2) status of coupling for 2021 Q1 as of 1/13/2021 (FY2021Q2- jan-mar)
+ also see email to Trey on 1/13/2021 
+================================================
+Behind on 2020Q3 and Q4 as relates to adaptation of new forcing engine.
+As a result this delay trickles down to the next Fiscal Year tasks.
+
+FY2021Q1
+========
+1) Obtain all validation datasets (wind, precipitation, and tide/surge data sets and observations 
+to be delivered by others; streamflow data sets to be obtained by OWP).
+
+2) Test and evaluate the ability of the coupled modeling system to utilize authoritative forcings data, 
+including high temporal resolution rainfall products.
+
+3) Test and evaluate operation of the NUOPC cap for the Atlantic and Gulf coast solution for 
+   seamless two-way coupling of the NWM to ADCIRC/ESTOFS/WW3 in support of the NSEM.
+   a) Coding dflow CAP - 80% completed, the rest is dependent on others
+   b) Compilation and execution of dflow, nwm, nems - completed, however question on configuration and bug report remains
+   c) Unit testing between nwm and dflow - in progress, pre-processing data is underway
+      goal: test on Sandy for Delawar with nwmv2.1 data for the period of 2012-10-09 through 2012-22-31 
+            per DFlow input/output availability for verification
+      input files for nwmv2.1 
+      - forcing(AORC) - Ready
+      - domain CONUS  - Ready
+        TBD
+        Atl. requires subdomaining all the input files, 
+        preprocessing inital condition (wrfinput.d01.conus_1km_NWMv2.1.nc)
+        preprocessing boundary condition
+      - restart files are available for 2021-10-01 only - Ready
+        running nwmv2.1 in stand alone mode for 9 days - TODO
+      - usgs discharge script - in progress
+        Hera admin to fix the connection to usgs site
+   d) Integration testing - diagram by Andre 
+   e) repeat when forcing is ready - TBD
+   Since nothing due on FY2021Q2 - I take this time toward 3) until FY2021Q3 (end of 30 June 2021)??
+
+FY2021Q3
+==========
+1) Complete test and evaluate the ability of the coupled modeling system to produce authoritative hindcast total water data sets for the following named storms: Ike (2008), Isabel (2003), Irma (2017), Sandy (2012), Irene (2011), Michael (2018), Florence (2018), Harvey (2017), Maria (2017).
+
+2) Finalize implementation of 2-way couple
+
+===========================
+(1) Changes made to dflow src code for nuopc development
+==========================
+net_main.F90 and net_start.F90
+-----------------------------
+#ifdef HAVE_MPI
+   call my_mpi_init(nuopc_comm)
+#else
+   numranks=1
+#endif
+
+! Beheen - 12/13/2020
+  subroutine my_mpi_init(nuopc_comm)
+    implicit none
+    integer, optional :: nuopc_comm      ! used in coupled system
+    integer :: ierr, provided
+
+   call mpi_init(ierr)
+
+   if (present(nuopc_comm)) then
+        DFM_COMM_DFMWORLD = nuopc_comm
+   endif
+
+   call mpi_comm_rank(DFM_COMM_DFMWORLD,my_rank,ierr)
+   call mpi_comm_size(DFM_COMM_DFMWORLD,numranks,ierr)
+   if (ierr /= MPI_SUCCESS) call fatal_error_stop("MPI Error: MPI_COMM_RANK
+                                                  and/or MPI_COMM_SIZE failed")
+   ja_mpi_init_by_fm = 1
+
+   if ( numranks.le.1 ) then
+      jampi = 0
+   end if
+
+
+!  make domain number string as soon as possible
+   write(sdmn, '(I4.4)') my_rank
+   write(6,*) 'my_rank =', my_rank
+
+  end subroutine
+------------------
+libdflowfm_la_SOURCES+=\
+        solve_parms.F90 \
+		
+libdflowfm_la_LIBADD=\
+        $(EXTRALIBS)
+		
+libflow1d_la_LIBADD=\
+  $(builddir)/../../flow1d_core/src/libflow1d_core.la \
+  $(builddir)/../../flow1d_io/src/libflow1d_io.la
+

@@ -1,0 +1,4 @@
+37c37
+<     character(*),  public, parameter :: delwaq_build_number = '141013M'
+---
+>     character(*),  public, parameter :: delwaq_build_number = '141013'

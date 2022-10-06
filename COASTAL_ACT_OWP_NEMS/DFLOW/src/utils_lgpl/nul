@@ -1,0 +1,4 @@
+38c38
+<     character(*),  public, parameter :: mormerge_build_number = '141013'
+---
+>     character(*),  public, parameter :: mormerge_build_number = '141013M'
